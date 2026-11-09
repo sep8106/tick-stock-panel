@@ -1022,15 +1022,33 @@ def sync_minute_batch(
         minute_progress=on_chunk_done,
     )
     stream = provider.iter_minute(symbols, start_time, end_time, asset_type=asset_type)
+    parts: list[pl.DataFrame] = []
+    tickflow_failed = False
     try:
-        if on_segment is not None:
+        try:
             for frame in stream:
-                on_segment(frame)
-            return pl.DataFrame()
-        parts = [frame for frame in stream if not frame.is_empty()]
-        return pl.concat(parts, how="diagonal_relaxed") if parts else pl.DataFrame()
+                if frame.is_empty():
+                    continue
+                parts.append(frame)
+                if on_segment is not None:
+                    on_segment(frame)
+        except Exception as exc:  # noqa: BLE001 - fallback is the intended degradation path
+            tickflow_failed = True
+            logger.warning("TickFlow minute request unavailable; trying Tencent fallback: %s", exc)
     finally:
         stream.close()
+    if parts and not tickflow_failed:
+        return pl.concat(parts, how="diagonal_relaxed") if on_segment is None else pl.DataFrame()
+
+    # TickFlow 无分钟权限、请求失败或返回空时，使用腾讯公开行情作为最近分钟K
+    # 兜底。该源只覆盖短期滚动窗口，不参与历史回测或全市场落盘能力声明。
+    from app.data_providers.tencent_provider import get_minute_batch
+    tencent = get_minute_batch(symbols, start_time=start_time, end_time=end_time)
+    if on_segment is not None:
+        if not tencent.is_empty():
+            on_segment(tencent)
+        return pl.DataFrame()
+    return pl.concat([*parts, tencent], how="diagonal_relaxed") if parts and not tencent.is_empty() else (tencent if not tencent.is_empty() else pl.concat(parts, how="diagonal_relaxed") if parts else pl.DataFrame())
 
 
 def intraday_monitor_support(capset: CapabilitySet | None) -> dict[str, object]:
@@ -1373,8 +1391,17 @@ def _fetch_minute_single(
         # 见 sync_minute_batch 同分支注释: df 在此必非 None。
         return df if df is not None else pl.DataFrame()
 
+    def _tencent_fallback() -> pl.DataFrame:
+        from app.data_providers.tencent_provider import get_minute
+        try:
+            return get_minute(symbol, start_time=start_time, end_time=end_time)
+        except Exception as exc:  # noqa: BLE001 - public fallback must remain best effort
+            logger.warning("Tencent minute fallback failed for %s: %s", symbol, exc)
+            return pl.DataFrame()
+
+    # No TickFlow single-symbol capability: still try the public fallback.
     if not capset.has(Cap.KLINE_MINUTE_BY_SYMBOL):
-        return pl.DataFrame()
+        return _tencent_fallback()
 
     tf = get_client()
     try:
@@ -1387,10 +1414,11 @@ def _fetch_minute_single(
             as_dataframe=False, show_progress=False,
         )
     except Exception as e:
-        logger.warning("fetch_minute_single(%s, %s) failed: %s", symbol, trade_date, e)
-        return pl.DataFrame()
+        logger.warning("fetch_minute_single(%s, %s) failed: %s; trying Tencent fallback", symbol, trade_date, e)
+        return _tencent_fallback()
 
-    return _normalize_minute(_compact_klines_to_df(raw, default_symbol=symbol))
+    frame = _normalize_minute(_compact_klines_to_df(raw, default_symbol=symbol))
+    return frame if not frame.is_empty() else _tencent_fallback()
 
 
 def fetch_adj_factor_single(

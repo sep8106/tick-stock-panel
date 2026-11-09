@@ -5,7 +5,7 @@ import gzip
 import json
 import logging
 import math
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from functools import lru_cache
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -167,6 +167,7 @@ def _minute_allowed(capset) -> bool:
     from app.tickflow.capabilities import Cap
     provider = kline_sync._selected_minute_provider_name()
     if provider == "tickflow":
+        # 全量分钟落盘仍需要 TickFlow 的原生能力；腾讯仅用于实时/单次查询兜底。
         return capset.has(Cap.KLINE_MINUTE_BATCH)
     _, fallback, error = kline_sync._resolve_minute_provider(provider)
     if error is not None:
@@ -873,7 +874,9 @@ def get_minute_batch(request: Request, body: dict):
     if not capset.has(Cap.KLINE_MINUTE_BATCH):
         svc = getattr(request.app.state, "minute_refresh", None)
         if svc is None or not svc.is_healthy():
-            raise HTTPException(status_code=403, detail="需要 Pro+ 权限 (kline.minute.batch)")
+            # 允许继续进入 kline_sync: TickFlow 失败后会使用腾讯公开分钟行情。
+            # 全量分钟刷新仍由自身能力门控，不会因该兜底被误认为已启用。
+            logger.info("minute batch capability unavailable; allowing Tencent fallback")
 
     trade_date = date.fromisoformat(trade_date_str) if trade_date_str else cn_today()
 
@@ -1554,7 +1557,28 @@ async def sync_minute_single(request: Request, body: dict):
         raise HTTPException(status_code=400, detail="指数分钟K不支持落库同步 (指数分钟数据走 /api/index/minute 实时读取)")
 
     if not _minute_allowed(capset):
-        raise HTTPException(status_code=403, detail="需要 Pro+ 权限")
+        # 单股按钮允许使用 kline_sync 的腾讯公开行情兜底；全市场同步接口
+        # 仍在 trigger_minute_sync 保留 TickFlow 能力门禁。
+        from app.data_providers.tencent_provider import get_minute
+        import polars as pl
+
+        trade_date = cn_today()
+        try:
+            frame = get_minute(
+                symbol,
+                start_time=datetime(trade_date.year, trade_date.month, trade_date.day, 9, 25),
+                end_time=datetime(trade_date.year, trade_date.month, trade_date.day, 15, 5),
+            )
+        except Exception as exc:  # noqa: BLE001 - public fallback is best effort
+            logger.warning("Tencent single-minute fallback failed for %s: %s", symbol, exc)
+            frame = pl.DataFrame()
+        if not frame.is_empty():
+            folder = repo.store.data_dir / ("kline_etf_minute" if asset_type == "etf" else "kline_minute")
+            with repo._write_lock:
+                kline_sync._write_minute_partition(frame, folder)
+            from app.jobs.daily_pipeline import _refresh_single_view
+            _refresh_single_view(repo, "kline_etf_minute" if asset_type == "etf" else "kline_minute")
+        return {"status": "ok", "symbol": symbol, "rows": frame.height, "source": "tencent"}
 
     days = requested_days if requested_days is not None else get_minute_sync_days()
     from app.services.minute_shared_pull import sync_history
