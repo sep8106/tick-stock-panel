@@ -231,6 +231,8 @@ class Settings(BaseSettings):
     # Auth — 首次启动时预置访问密码(明文, 仅用于初始化, 详见 services/auth.bootstrap_from_env)
     # 公网服务器部署时免去 SSH 端口转发设密码的麻烦。写入 auth.json(哈希)后即不再读取。
     auth_password: str = ""
+    # 首次预置时的账号名; 留空为 admin。仅随 AUTH_PASSWORD 一次性生效。
+    auth_username: str = ""
 
     # Data — 桌面版按平台约定；源码使用项目根 data/；Docker 使用 /app/data。
     # (均可被环境变量 DATA_DIR 覆盖, pydantic-settings 自动注入)

@@ -9,7 +9,8 @@
 安全要点:
   - 设密码接口必须限制本机/内网(见 auth router), 防黑客抢占域名抢先设密码。
   - 登录限流: 错5次锁5分钟(见 auth router 内存计数)。
-  - 单密码, 不做多用户(避免重构全项目数据层)。
+  - 单账号(用户名 + 密码), 不做多用户(避免重构全项目数据层)。
+    历史 auth.json 无 username 字段时按 DEFAULT_USERNAME 兼容。
 """
 from __future__ import annotations
 
@@ -30,6 +31,10 @@ logger = logging.getLogger(__name__)
 _PBKDF2_ITER = 200_000
 _SALT_LEN = 16
 _TOKEN_BYTES = 32
+
+# 未单独设置用户名时的默认账号名 (兼容只有密码的历史 auth.json)
+DEFAULT_USERNAME = "admin"
+USERNAME_MAX_LEN = 32
 
 # 会话有效期: 30 天(自托管单用户, 长一点减少重登频率)
 SESSION_TTL = 30 * 24 * 3600
@@ -114,15 +119,38 @@ def is_configured() -> bool:
     return _configured_cache
 
 
-def set_password(password: str) -> None:
-    """设置/修改访问密码。清空所有现有会话(强制重新登录)。"""
+def normalize_username(username: str | None) -> str:
+    """去首尾空白; 空值回落默认账号名。超长抛 ValueError。"""
+    name = (username or "").strip() or DEFAULT_USERNAME
+    if len(name) > USERNAME_MAX_LEN:
+        raise ValueError(f"用户名最多 {USERNAME_MAX_LEN} 位")
+    return name
+
+
+def _stored_username(d: dict) -> str:
+    stored = d.get("username")
+    return stored if isinstance(stored, str) and stored else DEFAULT_USERNAME
+
+
+def get_username() -> str:
+    """当前账号名; 历史 auth.json 未存 username 时返回默认值。"""
+    return _stored_username(_load())
+
+
+def set_password(password: str, username: str | None = None) -> None:
+    """设置/修改访问密码。清空所有现有会话(强制重新登录)。
+
+    username 为 None 时保留原账号名 (改密码场景); 首次设置时回落默认值。
+    """
     global _configured_cache
     if len(password) < 6:
         raise ValueError("密码至少 6 位")
+    name = get_username() if username is None else normalize_username(username)
     salt_hex, hash_hex = _hash_password(password)
     with _lock:
         _sessions.clear()  # 改密码 = 旧会话全部失效
         _save({
+            "username": name,
             "password_hash": hash_hex,
             "password_salt": salt_hex,
             "updated_at": int(time.time()),
@@ -145,6 +173,7 @@ def bootstrap_from_env() -> bool:
     from app.config import _ENV_FILE, settings
 
     pwd = (settings.auth_password or "").strip()
+    username = (settings.auth_username or "").strip() or None
     # Compose 会对 env_file 中未加单引号的 $VAR 做插值。Docker 部署时同时
     # 只读挂载原始 .env,首次初始化密码直接按 dotenv 语义读取,避免特殊字符被截断。
     if _ENV_FILE.is_file():
@@ -159,7 +188,7 @@ def bootstrap_from_env() -> bool:
         # 已设过密码, 不覆盖 (避免环境变量反复重置用户在 UI 改的密码)
         return False
     try:
-        set_password(pwd)
+        set_password(pwd, username=username or DEFAULT_USERNAME)
         logger.info("access password bootstrapped from AUTH_PASSWORD env (one-time)")
         return True
     except ValueError as e:
@@ -168,12 +197,21 @@ def bootstrap_from_env() -> bool:
         return False
 
 
-def verify_and_create_session(password: str) -> str | None:
-    """验证密码, 成功则创建会话并返回 token, 失败返回 None。"""
+def verify_and_create_session(password: str, username: str | None = None) -> str | None:
+    """验证(用户名 +)密码, 成功则创建会话并返回 token, 失败返回 None。
+
+    username 为 None 时只校验密码 (改密码验旧密码、只传密码的旧调用方)。
+    """
     d = _load()
     if not d.get("password_hash"):
         return None
-    if not _verify_password(password, d.get("password_salt", ""), d["password_hash"]):
+    # 先算密码哈希再比用户名, 避免用户名错误时提前返回暴露时序差
+    password_ok = _verify_password(password, d.get("password_salt", ""), d["password_hash"])
+    if username is not None:
+        expected = _stored_username(d).encode("utf-8")
+        if not _secrets.compare_digest(username.strip().encode("utf-8"), expected):
+            return None
+    if not password_ok:
         return None
     token = _secrets.token_urlsafe(_TOKEN_BYTES)
     expire = time.time() + SESSION_TTL

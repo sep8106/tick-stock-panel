@@ -13,13 +13,14 @@ import { useEffect, useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation } from '@tanstack/react-query'
 import { motion } from 'framer-motion'
-import { Eye, EyeOff, Loader2, Lock, ShieldCheck, ShieldAlert, Sparkles } from 'lucide-react'
+import { Eye, EyeOff, Loader2, Lock, ShieldCheck, ShieldAlert, Sparkles, User } from 'lucide-react'
 import { api } from '@/lib/api'
 import { Logo } from '@/components/Logo'
 import { cn } from '@/lib/cn'
 
 export function Auth() {
   const navigate = useNavigate()
+  const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')  // 仅设密码时用
   const [showPwd, setShowPwd] = useState(false)
@@ -41,9 +42,9 @@ export function Auth() {
   const submitMut = useMutation({
     mutationFn: async () => {
       if (isSetup) {
-        return api.authSetup(password)
+        return api.authSetup(username.trim(), password)
       }
-      return api.authLogin(password)
+      return api.authLogin(username.trim(), password)
     },
     onSuccess: () => {
       // 成功: 跳回原页面(或首页)
@@ -60,6 +61,7 @@ export function Auth() {
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault()
     setLocalError('')
+    if (!username.trim()) { setLocalError('请输入用户名'); return }
     if (isSetup) {
       if (password.length < 6) { setLocalError('密码至少 6 位'); return }
       if (password !== confirmPassword) { setLocalError('两次密码不一致'); return }
@@ -103,23 +105,38 @@ export function Auth() {
             </div>
             <div>
               <div className="text-sm font-medium text-foreground">
-                {isSetup ? '设置访问密码' : '登录访问'}
+                {isSetup ? '设置登录账号' : '登录访问'}
               </div>
               <div className="text-[11px] text-muted">
-                {isSetup ? '首次使用, 请为面板设置访问密码' : '请输入访问密码以继续'}
+                {isSetup ? '首次使用, 请为面板设置用户名和密码' : '请输入用户名和密码以继续'}
               </div>
             </div>
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-3">
+            {/* 用户名 */}
+            <div className="relative">
+              <input
+                type="text"
+                value={username}
+                onChange={e => setUsername(e.target.value)}
+                placeholder={isSetup ? '用户名(如 admin)' : '用户名'}
+                autoComplete="username"
+                maxLength={32}
+                autoFocus
+                className="h-10 w-full rounded-btn border border-border bg-base px-3 pr-9 text-sm text-foreground outline-none transition-colors focus:border-accent/50"
+              />
+              <User className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
+            </div>
+
             {/* 密码输入 */}
             <div className="relative">
               <input
                 type={showPwd ? 'text' : 'password'}
                 value={password}
                 onChange={e => setPassword(e.target.value)}
-                placeholder="访问密码"
-                autoFocus
+                placeholder="密码"
+                autoComplete={isSetup ? 'new-password' : 'current-password'}
                 className="h-10 w-full rounded-btn border border-border bg-base px-3 pr-9 text-sm text-foreground outline-none transition-colors focus:border-accent/50"
               />
               <button
@@ -139,6 +156,7 @@ export function Auth() {
                 value={confirmPassword}
                 onChange={e => setConfirmPassword(e.target.value)}
                 placeholder="再次输入密码"
+                autoComplete="new-password"
                 className="h-10 w-full rounded-btn border border-border bg-base px-3 text-sm text-foreground outline-none transition-colors focus:border-accent/50"
               />
             )}
@@ -153,7 +171,7 @@ export function Auth() {
 
             <button
               type="submit"
-              disabled={submitMut.isPending || !password}
+              disabled={submitMut.isPending || !password || !username.trim()}
               className="inline-flex h-10 w-full items-center justify-center gap-1.5 rounded-btn bg-accent text-sm font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
             >
               {submitMut.isPending ? (

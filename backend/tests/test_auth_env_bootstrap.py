@@ -64,3 +64,17 @@ def test_bootstrap_from_env_does_not_override_existing_password(
     assert auth_path.read_bytes() == before
     assert auth.verify_and_create_session("web-managed-secret") is not None
     assert auth.verify_and_create_session("replacement-secret") is None
+
+
+def test_bootstrap_from_env_sets_username(
+    isolated_auth_store: tuple[ModuleType, Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    auth, _auth_path, _env_path = isolated_auth_store
+    monkeypatch.setattr(app_config.settings, "auth_password", "env-secret")
+    monkeypatch.setattr(app_config.settings, "auth_username", "trader")
+
+    assert auth.bootstrap_from_env() is True
+    assert auth.get_username() == "trader"
+    assert auth.verify_and_create_session("env-secret", username="trader") is not None
+    assert auth.verify_and_create_session("env-secret", username="admin") is None

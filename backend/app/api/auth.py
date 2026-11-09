@@ -1,9 +1,9 @@
 """访问认证 API。
 
 端点:
-  GET  /api/auth/status        — 是否已设密码、当前会话是否有效
-  POST /api/auth/setup         — 首次设置密码(仅限本机/内网, 防公网抢占)
-  POST /api/auth/login         — 登录(密码 → 会话 token, 含限流)
+  GET  /api/auth/status        — 是否已设密码、当前会话是否有效(已登录时附账号名)
+  POST /api/auth/setup         — 首次设置账号密码(仅限本机/内网, 防公网抢占)
+  POST /api/auth/login         — 登录(用户名 + 密码 → 会话 token, 含限流)
   POST /api/auth/logout        — 注销当前会话
   POST /api/auth/change-password — 改密码(需已登录)
 
@@ -99,10 +99,14 @@ def _clear_login_fails(ip: str) -> None:
 
 class PasswordIn(BaseModel):
     password: str = Field(min_length=6, max_length=128)
+    # 缺省 = 默认账号名 admin
+    username: str | None = Field(default=None, max_length=auth.USERNAME_MAX_LEN)
 
 
 class LoginIn(BaseModel):
     password: str = Field(min_length=1, max_length=128)
+    # 缺省 = 只校验密码, 兼容未传用户名的旧调用方
+    username: str | None = Field(default=None, max_length=auth.USERNAME_MAX_LEN)
 
 
 class ChangePasswordIn(BaseModel):
@@ -112,12 +116,16 @@ class ChangePasswordIn(BaseModel):
 
 @router.get("/status")
 def auth_status(request: Request) -> dict:
-    """认证状态: 是否已设密码 + 当前请求是否已登录。"""
+    """认证状态: 是否已设密码 + 当前请求是否已登录。
+
+    账号名只回给已登录会话, 不向未登录访问者暴露。
+    """
     token = request.cookies.get(COOKIE_NAME)
-    return {
-        "configured": auth.is_configured(),
-        "authenticated": bool(token and auth.is_valid_session(token)),
-    }
+    authenticated = bool(token and auth.is_valid_session(token))
+    out: dict = {"configured": auth.is_configured(), "authenticated": authenticated}
+    if authenticated:
+        out["username"] = auth.get_username()
+    return out
 
 
 @router.post("/setup")
@@ -138,24 +146,31 @@ def setup_password(req: PasswordIn, request: Request) -> dict:
     if auth.is_configured():
         raise HTTPException(status_code=409, detail="密码已设置,如需修改请登录后使用改密码功能")
 
-    auth.set_password(req.password)
+    try:
+        auth.set_password(req.password, username=auth.normalize_username(req.username))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
     logger.info("access password set up from %s", client_ip)
     return {"ok": True, "configured": True}
 
 
 @router.post("/login")
 def login(req: LoginIn, request: Request, response: Response) -> dict:
-    """登录: 密码 → 会话 token(写 HttpOnly cookie)。含失败限流。"""
+    """登录: (用户名 +)密码 → 会话 token(写 HttpOnly cookie)。含失败限流。"""
     ip = _client_ip(request)
     _check_login_rate_limit(ip)
 
     if not auth.is_configured():
         raise HTTPException(status_code=409, detail="尚未设置访问密码")
 
-    token = auth.verify_and_create_session(req.password)
+    token = auth.verify_and_create_session(req.password, username=req.username)
     if not token:
         _record_login_fail(ip)
-        raise HTTPException(status_code=401, detail="密码错误")
+        # 不区分用户名错/密码错, 避免枚举账号名
+        raise HTTPException(
+            status_code=401,
+            detail="用户名或密码错误" if req.username is not None else "密码错误",
+        )
 
     _clear_login_fails(ip)
     # HttpOnly: 防 XSS 窃取; SameSite=Lax: 防 CSRF; Path=/: 全站生效

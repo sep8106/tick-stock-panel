@@ -2760,17 +2760,18 @@ export const api = {
   health: () => request<{ status: string; version: string; mode: string }>('/health'),
 
   // ===== Auth (访问认证) =====
+  // username 仅在已登录时返回
   authStatus: () =>
-    request<{ configured: boolean; authenticated: boolean }>('/api/auth/status'),
-  authSetup: (password: string) =>
+    request<{ configured: boolean; authenticated: boolean; username?: string }>('/api/auth/status'),
+  authSetup: (username: string, password: string) =>
     request<{ ok: boolean }>('/api/auth/setup', {
       method: 'POST',
-      body: JSON.stringify({ password }),
+      body: JSON.stringify({ username, password }),
     }),
-  authLogin: (password: string) =>
+  authLogin: (username: string, password: string) =>
     request<{ ok: boolean }>('/api/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ password }),
+      body: JSON.stringify({ username, password }),
     }),
   authLogout: () =>
     request<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }),
