@@ -83,6 +83,29 @@ function EmotionRadarCard({ ctx }: { ctx: WidgetCtx }) {
   )
 }
 
+/** 成交额卡片副行: 与前一交易日同时刻对比。盘中今日额是累计值, 只有按时间对齐的基准才能算涨跌幅;
+ *  取不到对齐基准时只给出昨日全天额, 不显示涨跌 (拿全天额比盘中额会恒显示缩量)。 */
+function AmountCompareSub({ amount }: { amount: OverviewMarket['amount'] }) {
+  const avgTip = `均额 ${fmtBigNum(amount.avg)}`
+  const ratio = amount.change_ratio
+  if (ratio != null && amount.prev_total != null) {
+    const pct = ratio * 100
+    const cls = pct > 0 ? 'text-bull' : pct < 0 ? 'text-bear' : 'text-muted'
+    const when = amount.aligned_at ? `昨${amount.aligned_at}` : '昨日'
+    const prevDate = amount.prev_date ? `前一交易日 ${amount.prev_date}` : '前一交易日'
+    return (
+      <span title={`${prevDate}${amount.aligned_at ? ` ${amount.aligned_at} 累计` : '全天'} ${fmtBigNum(amount.prev_total)} · ${avgTip}`}>
+        <span className={cls}>{pct > 0 ? '▲' : pct < 0 ? '▼' : ''}{Math.abs(pct).toFixed(1)}%</span>
+        <span> · {when} {fmtBigNum(amount.prev_total)}</span>
+      </span>
+    )
+  }
+  if (amount.prev_full != null) {
+    return <span title={`${amount.prev_date ?? ''} 同时刻数据暂缺, 无法对比 · ${avgTip}`}>昨日全天 {fmtBigNum(amount.prev_full)}</span>
+  }
+  return <span>{avgTip}</span>
+}
+
 function KpiWidget({ ctx }: { ctx: WidgetCtx }) {
   const { data, hasDepth, isSealedDegrade, sealedReady } = ctx
   const strongUp = data.breadth.strong_up ?? 0
@@ -98,7 +121,7 @@ function KpiWidget({ ctx }: { ctx: WidgetCtx }) {
         if (stocks.length > 0 && stocks.length <= 3) return stocks.map(s => s.name || s.symbol).join(' · ')
         return `梯队 ${data.limit.tiers.length}`
       })()} tone="accent" />
-      <KpiCell label="成交额" value={fmtBigNum(data.amount.total)} sub={`均额 ${fmtBigNum(data.amount.avg)}`} />
+      <KpiCell label="成交额" value={fmtBigNum(data.amount.total)} sub={<AmountCompareSub amount={data.amount} />} />
       <KpiCell label="换手 / 量比" value={`${fmtPrice(data.activity.avg_turnover, 1)}% / ${fmtPrice(data.activity.vol_ratio, 2)}`} sub={`高换手 ${data.activity.high_turnover} · 放量占比 ${fmtPrice(data.activity.high_vol_ratio, 1)}%`} tone="accent" />
     </div>
   )

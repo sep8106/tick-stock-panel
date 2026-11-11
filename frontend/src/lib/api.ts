@@ -546,7 +546,22 @@ export interface OverviewMarket {
     strong_up?: number
     strong_down?: number
   }
-  amount: { total: number; avg: number }
+  amount: {
+    total: number
+    avg: number
+    /** 前一交易日 (YYYY-MM-DD); 无前一交易日数据时缺省/null */
+    prev_date?: string | null
+    /** 前一交易日全天成交额 (元) */
+    prev_full?: number | null
+    /** 前一交易日「同时刻」成交额 (元); 盘后/历史日期即全天额; 取不到为 null */
+    prev_total?: number | null
+    /** 盘中对齐的时刻 HH:MM; 全天对比时为 null */
+    aligned_at?: string | null
+    /** 基准来源: daily 日线全天 / minute 分钟线 / recorded 自记盘中曲线 */
+    source?: 'daily' | 'minute' | 'recorded' | null
+    /** 相对前一交易日同时刻的变化, 小数制 (0.123 = +12.3%); 不可比时为 null */
+    change_ratio?: number | null
+  }
   boards: { board: string; count: number; up: number; down: number; up_pct: number; amount: number }[]
   limit: { limit_up: number; broken: number; failed: number; limit_down: number; max_boards: number; seal_rate?: number; tiers: { boards: number; count: number; stocks?: { symbol: string; name?: string; amount?: number }[] }[]; sealed_ready?: boolean; fake_up?: number; fake_down?: number }
   distribution: { label: string; count: number; pct: number }[]

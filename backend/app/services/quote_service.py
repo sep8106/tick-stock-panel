@@ -1140,6 +1140,11 @@ class QuoteService:
             self._broadcast_quote_updated()
             return
 
+        # 记录全市场累计成交额的盘中曲线, 供看板「成交额」次日做同时刻对比。
+        # partial 轮只拉到部分股票, 合计偏小, 不记。
+        if not (partial_assets and "stock" in partial_assets):
+            self._record_intraday_amount(stock_records)
+
         # 轮询放量状态更新 (volume_delta 规则的差值来源)
         self._update_volume_delta(stock_records, fetched_at)
 
@@ -1199,6 +1204,33 @@ class QuoteService:
     # ================================================================
     # 工具
     # ================================================================
+
+    def _record_intraday_amount(self, stock_records: list[dict]) -> None:
+        """把本轮全市场股票累计成交额写入盘中曲线 (静默降级, 不得影响行情主流程)。"""
+        if not self._repo or not stock_records:
+            return
+        try:
+            from app.services import amount_compare
+
+            total = 0.0
+            for r in stock_records:
+                a = r.get("amount")
+                if isinstance(a, (int, float)) and a == a and a > 0:
+                    total += float(a)
+            # 以快照自带的最新时间戳定时刻 (源端延迟时比墙钟准); 缺失才用本地时钟
+            ts_vals = [t for t in (r.get("timestamp") for r in stock_records) if t]
+            at = (
+                datetime.fromtimestamp(max(ts_vals) / 1000, CN_TZ)
+                if ts_vals else datetime.fromtimestamp(time.time(), CN_TZ)
+            )
+            # 只记当日快照: 收盘后源端仍返回旧日数据时不能写进今天的曲线
+            if at.date() != cn_today():
+                return
+            amount_compare.record_total(
+                self._repo.store.data_dir, at.date(), at.strftime("%H:%M"), total,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("盘中成交额曲线记录失败: %s", e)
 
     def _collect_monitor_index_symbols(self) -> set[str]:
         """启用中的指数监控规则标的 (asset_type=index & scope=symbols)。"""

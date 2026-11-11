@@ -21,6 +21,7 @@ from typing import Any
 
 import polars as pl
 
+from app.services.amount_compare import compare_amount
 from app.services.ext_data import ExtConfig, ExtConfigStore
 from app.services.index_const import CORE_INDEX_NAMES, CORE_INDEX_SYMBOLS
 from app.services.screener import ScreenerService
@@ -607,7 +608,7 @@ def build_market_overview(
             "strong_up": strong_up,
             "strong_down": strong_down,
         },
-        "amount": {"total": total_amount, "avg": avg_amount},
+        "amount": {"total": total_amount, "avg": avg_amount, **compare_amount(svc, as_of, total_amount)},
         "boards": boards,
         "limit": {"limit_up": limit_up, "broken": broken, "failed": 0, "limit_down": limit_down, "max_boards": max_boards, "seal_rate": seal_rate, "tiers": tiers, "sealed_ready": sealed_ready, "fake_up": fake_up, "fake_down": fake_down},
         "distribution": _pct_band_rows(pct_values),
